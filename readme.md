@@ -1,0 +1,1 @@
+Minimal cmake cross-compile project for streaming video from raspberry pi without the use of libcamera.
