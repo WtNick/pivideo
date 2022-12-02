@@ -914,13 +914,14 @@ class vdev
 
 	class stream
 	{
-		vdev* dev;
+		
 		const int buf_type;
 		int mem_type;
 		std::queue<int> freebufs;
 		std::map<int, void*> mmapbuffers;
 
 		public:
+		vdev* dev;
 		stream(vdev* dev, int buf_type)
 				:dev(dev)
 				,buf_type(buf_type)
@@ -1140,17 +1141,20 @@ class vdev
 			return false;
 		}
 
+		void dequeuedma(dmabuf* b){
+			v4l2_buffer vb;
+			vb.type = buf_type;
+    		vb.memory = V4L2_MEMORY_DMABUF;
+    		dev->ioctl(VIDIOC_DQBUF, &vb, __func__);
+			freebufs.push(vb.index);
+			b->bytesused = vb.bytesused;
+			b->length = vb.length;
+			b->fd = vb.m.fd;
+		}
+
 		bool trydequeuedma(int events, dmabuf* b){
 			if (dev->Poll(events)){
-				v4l2_buffer vb;
-				vb.type = buf_type;
-    			vb.memory = V4L2_MEMORY_DMABUF;
-    			dev->ioctl(VIDIOC_DQBUF, &vb, __func__);
-				freebufs.push(vb.index);
-				b->bytesused = vb.bytesused;
-				b->length = vb.length;
-				b->fd = vb.m.fd;
-				//std::cout << name << " dq fd: "<< b->m.fd << " bufsize: "<< b->bytesused << " index:" << b->index <<std::endl;
+				dequeuedma(b);
 				return true;
 			}
 			return false;
@@ -1590,6 +1594,41 @@ static void printframe(uint8_t* frame, int width, int height, int stride)
 	}
 	std::cout << "\e[" << linecount << "A";
 }
+
+class eventmanager
+{
+		struct callbackinfo
+		{
+			short event;
+			std::function<void()> callback;
+		};
+		std::map<int, callbackinfo> table;
+		std::vector<pollfd> pfd;
+		std::vector<callbackinfo> callbacks;
+
+	public:
+		void registercallback(int fd, short pollevent, std::function<void()> fn)
+		{
+			auto rt = table.find(fd);
+			if (rt == table.end()){
+				table.emplace(fd, callbackinfo{pollevent, fn});
+			}
+			pfd.push_back(pollfd{fd, pollevent, 0});
+			callbacks.push_back(callbackinfo{pollevent, fn});
+		}
+
+		void Run()
+		{
+			int pr = poll(pfd.data(), pfd.size(), 300);
+			if (pr>0) {
+				for(int i = 0;i<pfd.size();i++)
+					if (pfd[i].revents & callbacks[i].event){
+						callbacks[i].callback();
+					}
+			} 
+		}
+};
+
 #include <thread>
 void captureframe()
 {
@@ -1598,6 +1637,7 @@ void captureframe()
 	vdev vid_isp_capture1("/dev/video14");
 	vdev vid_isp_capture2("/dev/video15");
 	vdev vid_isp_stat("/dev/video16");
+
 
 	auto vid = vid0.getstream(V4L2_BUF_TYPE_VIDEO_CAPTURE);
 	auto isp_out = vid_isp_out.getstream(V4L2_BUF_TYPE_VIDEO_OUTPUT);
@@ -1635,6 +1675,38 @@ void captureframe()
 	encoder.init(*isp_cap1);
 	encoder.setbitrate(1000000);
 
+	eventmanager em;
+	em.registercallback(vid0.fd(), POLLIN, [&vid, &isp_out](){
+		dmabuf vbuf;
+		vid->dequeuedma(&vbuf);
+		isp_out->queuedma(vbuf);
+	});
+
+	em.registercallback(vid_isp_out.fd(), POLLOUT, [&isp_out,&vid](){
+		dmabuf vbuf;
+		isp_out->dequeuedma(&vbuf);
+		vid->queuedma(vbuf);
+	});
+
+	em.registercallback(vid_isp_capture1.fd(), POLLIN, [&isp_cap1,&encoder](){
+		dmabuf vbuf;
+		isp_cap1->dequeuedma(&vbuf);
+		encoder.output.queuedma_plane(vbuf);
+	});
+
+	em.registercallback(vid_isp_capture2.fd(), POLLIN, [&isp_cap2](){
+		dmabuf vbuf;
+		isp_cap2->dequeuedma(&vbuf);
+		isp_cap2->queuedma(vbuf);
+		
+	});
+	em.registercallback(vid_isp_stat.fd(), POLLIN, [&isp_stats](){
+		dmabuf vbuf;
+		isp_stats->dequeuedma(&vbuf);
+		isp_stats->queuedma(vbuf);
+	});
+	em.registercallback(encoder.fd(), POLLIN, [](){std::cout<<"x";});
+
 	encoder.output.RequestBuffers(12, V4L2_MEMORY_DMABUF);		
 	encoder.capture.RequestBuffers(12, V4L2_MEMORY_MMAP);
 	encoder.capture.FillQueueMMAP();
@@ -1663,46 +1735,26 @@ void captureframe()
 	encoder.capture.start_streaming();
 	encoder.output.start_streaming();
 	
+	std::cout << "go.. "<<std::endl;
 	for(;;) {
-		
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+		 std::cout << std::endl;
+		em.Run();
+    	timespec time1;
+    	clock_gettime(CLOCK_REALTIME, &time1);
+    	std::cout << " <" << time1.tv_sec<<":"<<time1.tv_nsec <<"> ";
+
 		dmabuf vbuf;
-		
-		if (vid->trydequeuedma(POLLIN, &vbuf))
-		{
-			isp_out->queuedma(vbuf);
-		}
-
-		if (isp_out->trydequeuedma(POLLOUT, &vbuf)) {
-			vid->queuedma(vbuf);
-		}
-
-		if (isp_cap1->trydequeuedma(POLLIN, &vbuf))
-		{
-			encoder.output.queuedma_plane(vbuf);
-		}
-		
 		if (encoder.Poll(POLLIN)){
 			if (encoder.output.trydequeuedma_plane(&vbuf)){
+				std::cout << 'X';
 				isp_cap1->queuedma(vbuf);
 			}
 			int bufindex;
 			encoder.capture.trydequeue_mmap_plane(&bufindex,[](auto data){
+				std::cout << 'k';
 				udpsender->Write(data.data(), data.size_bytes());
 			});
-		}
-		
-		if (isp_cap2->trydequeuedma(POLLIN, &vbuf)){
-			isp_cap2->queuedma(vbuf);
-		}
-		
-		if (isp_stats->trydequeuedma(POLLIN, &vbuf)) {
-			auto ptr = (uint8_t*)mappeddata[vbuf.fd];
-			if (ptr){
-				//auto stats = (bcm2835_isp_stats*)ptr;
-				//printhistogram(std::span(stats->hist->b_hist, NUM_HISTOGRAM_BINS));
-			}
-			isp_stats->queuedma(vbuf);
 		}
 	}
 
