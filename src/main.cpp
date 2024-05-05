@@ -15,6 +15,8 @@
 #include <sys/poll.h>
 #include <unistd.h>
 
+#include <functional>
+
 #include <linux/media.h>
 #include <linux/videodev2.h>
 
@@ -1480,7 +1482,7 @@ std::cout << "encoder init: "<<width<<"x"<<height<<std::endl;
 					//std::cout << ptr<<std::endl;
 					//outputfile.write((char*)ptr, (size_t)len);
 
-					udpsender->Write(ptr,len);
+					//udpsender->Write(ptr,len);
 					std::cout << "capture dequeued, size: " << buf.m.planes[0].bytesused << "/" << buf.m.planes[0].length;
 					
 
@@ -1633,7 +1635,7 @@ void captureframe()
 	encoder.output.stop_streaming();
 	encoder.capture.stop_streaming();
 	encoder.init(*isp_cap1);
-	encoder.setbitrate(1000000);
+	encoder.setbitrate(200000);
 
 	encoder.output.RequestBuffers(12, V4L2_MEMORY_DMABUF);		
 	encoder.capture.RequestBuffers(12, V4L2_MEMORY_MMAP);
@@ -1688,7 +1690,11 @@ void captureframe()
 			}
 			int bufindex;
 			encoder.capture.trydequeue_mmap_plane(&bufindex,[](auto data){
-				udpsender->Write(data.data(), data.size_bytes());
+				if (udpsender){
+					udpsender->Write(data.data(), data.size_bytes());
+				}
+				
+				//std::cout<<data.size_bytes()<<std::endl;
 			});
 		}
 		
@@ -1699,8 +1705,8 @@ void captureframe()
 		if (isp_stats->trydequeuedma(POLLIN, &vbuf)) {
 			auto ptr = (uint8_t*)mappeddata[vbuf.fd];
 			if (ptr){
-				//auto stats = (bcm2835_isp_stats*)ptr;
-				//printhistogram(std::span(stats->hist->b_hist, NUM_HISTOGRAM_BINS));
+				auto stats = (bcm2835_isp_stats*)ptr;
+				printhistogram(std::span(stats->hist->b_hist, NUM_HISTOGRAM_BINS));
 			}
 			isp_stats->queuedma(vbuf);
 		}
@@ -1719,9 +1725,30 @@ void captureframe()
 	//close(fd);
 }
 
+#include <regex.h>
 int main(int argc, const char *argv[])
 {
-	udpsender = std::make_unique<UDPSender>("192.168.1.181", 8805);
+	int portnr = 8805;
+	std::string host = "192.168.1.181";
+	if  (argc>1){
+			std::string str = argv[1];
+			auto pos = (int)str.find_first_of(":");
+			host = str;
+			if (pos>0){
+				host = str.substr(0,pos);
+				portnr = std::stoi(str.substr(pos+1));
+				if (portnr<0) {
+					std::cerr<<"bad port nr"<<std::endl;
+				}
+			}else{
+				host=str;
+			}
+	}
+
+	std::cout << "host: "<<host <<", port: "<<portnr<<std::endl;
+
+	
+	udpsender = std::make_unique<UDPSender>(host, portnr);
 
 	captureframe();
 
