@@ -391,6 +391,8 @@ static int populatePads(const struct media_v2_topology &topology)
 				  << " entity_id:" << mediaPads[i].entity_id
 				  << " [" << padflags(mediaPads[i].flags) << "]"
 				  << std::endl;
+
+	
 		/* Store a reference to this MediaPad in entity. */
 		// MediaEntity *mediaEntity = dynamic_cast<MediaEntity *>
 		// (object(entity_id));
@@ -895,8 +897,6 @@ void alloc_dma(size_t bufsize, dmabuf* bufinfo)
 			exit(1);
 			return;
 		}
-
-		std::cout << "dma allocation ok: fd: "<<alloc.fd<<std::endl;
 	
 	auto bufferptr = mmap(NULL, bufsize, PROT_READ | PROT_WRITE, MAP_SHARED, alloc.fd, 0);
 	mappeddata[alloc.fd] = bufferptr;
@@ -916,13 +916,14 @@ class vdev
 
 	class stream
 	{
-		vdev* dev;
+		
 		const int buf_type;
 		int mem_type;
 		std::queue<int> freebufs;
 		std::map<int, void*> mmapbuffers;
 
 		public:
+		vdev* dev;
 		stream(vdev* dev, int buf_type)
 				:dev(dev)
 				,buf_type(buf_type)
@@ -1009,7 +1010,7 @@ class vdev
     		req.count = count;
     		req.type = buf_type;
     		req.memory = mem_type;
-    		dev->ioctl(VIDIOC_REQBUFS, &req, __func__);
+    		dev->ioctl(VIDIOC_REQBUFS, &req);
 
 			for(int i = 0;i<req.count;i++){
 				freebufs.push(i);
@@ -1020,16 +1021,16 @@ class vdev
 
 		void start_streaming()
 		{
-			std::cout << "start streaming" << std::endl;
+			//std::cout << "start streaming" << std::endl;
 			int type = buf_type;
-			dev->ioctl(VIDIOC_STREAMON, &type, __func__);
+			dev->ioctl(VIDIOC_STREAMON, &type);
     	}
 
 		void stop_streaming()
 		{
-			std::cout << "stop  streaming" << std::endl;
+			//std::cout << "stop  streaming" << std::endl;
 			int type = buf_type;
-			dev->ioctl(VIDIOC_STREAMOFF, &type, __func__);
+			dev->ioctl(VIDIOC_STREAMOFF, &type);
     	}
 
 		void queuedma(dmabuf& b)
@@ -1047,7 +1048,7 @@ class vdev
 			vb.m.fd = b.fd;
 			vb.bytesused = b.length;
 			vb.length = b.length;
-			dev->ioctl(VIDIOC_QBUF, &vb, __func__);
+			dev->ioctl(VIDIOC_QBUF, &vb);
 		}
 
 		void queuedma_plane(dmabuf& b)
@@ -1074,7 +1075,23 @@ class vdev
 			vb.m.planes[0].bytesused = b.bytesused;
 			vb.m.planes[0].length = b.length;
 			//std::cout << "encoder output queued "<< vb.index <<", bytesused: " << b.bytesused <<" length "<< b.length<<std::endl;
-			dev->ioctl(VIDIOC_QBUF, &vb, __func__);
+			dev->ioctl(VIDIOC_QBUF, &vb);
+		}
+
+		void dequeuedma_plane(dmabuf* b)
+		{
+			v4l2_buffer buf = {};
+			v4l2_plane planes[VIDEO_MAX_PLANES] = {};
+			buf.type = buf_type;
+			buf.memory = V4L2_MEMORY_DMABUF;
+			buf.length = 1;
+			buf.m.planes = planes;
+			dev->ioctl(VIDIOC_DQBUF, &buf);
+			
+			b->fd = buf.m.planes[0].m.fd;
+			b->bytesused = buf.m.planes[0].bytesused;
+			b->length = buf.m.planes[0].length;
+			freebufs.push(buf.index);
 		}
 
 		bool trydequeuedma_plane(dmabuf* b)
@@ -1136,23 +1153,26 @@ class vdev
 				buf.m.planes[0].bytesused = buf.m.planes[0].length;
 
 				// requeue
-				dev->ioctl(VIDIOC_QBUF, &buf, __func__);
+				dev->ioctl(VIDIOC_QBUF, &buf);
 				return true;
 			}
 			return false;
 		}
 
+		void dequeuedma(dmabuf* b){
+			v4l2_buffer vb;
+			vb.type = buf_type;
+    		vb.memory = V4L2_MEMORY_DMABUF;
+    		dev->ioctl(VIDIOC_DQBUF, &vb);
+			freebufs.push(vb.index);
+			b->bytesused = vb.bytesused;
+			b->length = vb.length;
+			b->fd = vb.m.fd;
+		}
+
 		bool trydequeuedma(int events, dmabuf* b){
 			if (dev->Poll(events)){
-				v4l2_buffer vb;
-				vb.type = buf_type;
-    			vb.memory = V4L2_MEMORY_DMABUF;
-    			dev->ioctl(VIDIOC_DQBUF, &vb, __func__);
-				freebufs.push(vb.index);
-				b->bytesused = vb.bytesused;
-				b->length = vb.length;
-				b->fd = vb.m.fd;
-				//std::cout << name << " dq fd: "<< b->m.fd << " bufsize: "<< b->bytesused << " index:" << b->index <<std::endl;
+				dequeuedma(b);
 				return true;
 			}
 			return false;
@@ -1168,7 +1188,7 @@ class vdev
 			struct v4l2_format fm;
 
 			fm.type = buf_type;
-			dev->ioctl(VIDIOC_G_FMT, &fm, __func__);
+			dev->ioctl(VIDIOC_G_FMT, &fm);
 
 			// have v4l2 driver come up with best bytesperline/sizeimage 
 			fm.fmt.pix.bytesperline = 0;
@@ -1179,7 +1199,7 @@ class vdev
 			fm.fmt.pix.pixelformat = pixelformat.fourcc;
 
 			std::cout << dev->name << " set format"<<std::endl;
-			dev->ioctl(VIDIOC_S_FMT, &fm, __func__);
+			dev->ioctl(VIDIOC_S_FMT, &fm);
 		
 			this->bytesperline = fm.fmt.pix.bytesperline;
 			this->width = fm.fmt.pix.width;
@@ -1196,7 +1216,7 @@ class vdev
 			struct v4l2_format data = {0};
 			data.type = buf_type;
 
-        	dev->ioctl(VIDIOC_G_FMT, &data, __func__);
+        	dev->ioctl(VIDIOC_G_FMT, &data);
         
 			auto colorspace = static_cast<v4l2_colorspace>(data.fmt.pix.colorspace);
 			std::cout << dev->name << " v4l2_buf_type:" << data.type << ' ' << colorspace <<' ' << v4l2_pixelformat(data.fmt.pix.pixelformat) <<' ' << data.fmt.pix.width << "x"<<data.fmt.pix.height<< " size image:" << data.fmt.pix.sizeimage << std::endl;
@@ -1216,9 +1236,9 @@ class vdev
 			struct v4l2_format fm = {0};
 
 			fm.type = buf_type;
-			dev->ioctl(VIDIOC_G_FMT, &fm, __func__);
+			dev->ioctl(VIDIOC_G_FMT, &fm);
 			fm.type = buf_type;
-			dev->ioctl(VIDIOC_S_FMT, &fm, __func__);
+			dev->ioctl(VIDIOC_S_FMT, &fm);
 		}
 	};
 	
@@ -1236,12 +1256,12 @@ class vdev
 		return std::make_unique<stream>(this, buf_type);
 	}
 
-	void ioctl(int request, void* arg, const char* errormsg)
+	void ioctl(int request, void* arg)
 	{
 		int ret = xioctl(_fd, request, arg);
 		if(ret < 0)
     	{	
-			std::cerr << "ERROR  "<< name <<" ----------------- ioctl error : " << errormsg<< " " <<ret<<std::endl;
+			std::cerr << "ERROR  "<< name <<" ----------------- ioctl error : " <<ret<<std::endl;
         	perror("ioctl");
 			exit(1);
         	return;
@@ -1329,7 +1349,7 @@ class vdev
 				ext.which = V4L2_CTRL_WHICH_CUR_VAL;
 				ext.controls = v4l2Ctrls.data();
 				ext.count = 1;
-				ioctl(VIDIOC_G_EXT_CTRLS, &ext, "listcontrols");
+				ioctl(VIDIOC_G_EXT_CTRLS, &ext);
 				if (ext.error_idx){
 					std::cout << "value error" << std::endl;
 				}
@@ -1364,7 +1384,7 @@ class h264encoder
 			v4l2_control ctrl = {};
 			ctrl.id = V4L2_CID_MPEG_VIDEO_BITRATE;
 			ctrl.value=bitrate;
-			ioctl(VIDIOC_S_CTRL, &ctrl, __func__);
+			ioctl(VIDIOC_S_CTRL, &ctrl);
 		}
 
 		void init(const vdev::stream& stream)
@@ -1592,7 +1612,38 @@ static void printframe(uint8_t* frame, int width, int height, int stride)
 	}
 	std::cout << "\e[" << linecount << "A";
 }
-#include <thread>
+
+class eventmanager
+{
+		struct callbackinfo
+		{
+			short event;
+			std::function<void()> callback;
+		};
+		std::vector<pollfd> pfd;
+		std::vector<callbackinfo> callbacks;
+
+	public:
+		void registercallback(int fd, short pollevent, std::function<void()> fn)
+		{
+			pfd.push_back(pollfd{fd, pollevent, 0});
+			callbacks.push_back(callbackinfo{pollevent, fn});
+		}
+
+		void Run()
+		{
+			int pr = poll(pfd.data(), pfd.size(), 300);
+			if (pr>0) {
+				for(int i = 0;i<pfd.size();i++)
+				{
+					if (pfd[i].revents & callbacks[i].event){
+						callbacks[i].callback();
+					}
+				}
+			} 
+		}
+};
+
 void captureframe()
 {
 	vdev vid0("/dev/video0");
@@ -1600,6 +1651,7 @@ void captureframe()
 	vdev vid_isp_capture1("/dev/video14");
 	vdev vid_isp_capture2("/dev/video15");
 	vdev vid_isp_stat("/dev/video16");
+
 
 	auto vid = vid0.getstream(V4L2_BUF_TYPE_VIDEO_CAPTURE);
 	auto isp_out = vid_isp_out.getstream(V4L2_BUF_TYPE_VIDEO_OUTPUT);
@@ -1610,7 +1662,7 @@ void captureframe()
 	//vdev vid_cam("/dev/v4l-subdev0");
 	//vid_cam.listcontrols();
 
-	vid->stop_streaming();
+	//vid->stop_streaming();
 	isp_out->stop_streaming();
 	isp_cap1->stop_streaming();
 	isp_cap2->stop_streaming();
@@ -1625,8 +1677,16 @@ void captureframe()
 	int width = 640;
 	int height = 480;
 	
-	vid->setformat(width, height, V4L2_PIX_FMT_SGBRG10P); // 10 bit Bayer packed
-	isp_out->setformat(width, height, V4L2_PIX_FMT_SGBRG10P);
+
+//auto format = V4L2_PIX_FMT_SBGGR8;// 10 bit Bayer packed
+auto format = V4L2_PIX_FMT_SGBRG10P;
+
+	vid->setformat(width, height, format); 
+	isp_out->setformat(width, height, format);
+
+	//vid->setformat(width, height, V4L2_PIX_FMT_YUYV);
+	//isp_out->setformat(width, height, V4L2_PIX_FMT_YUYV);
+
 	isp_cap1->setformat(width, height, V4L2_PIX_FMT_YUV420);
 	isp_cap2->setformat(width/2, height/2, V4L2_PIX_FMT_YUV420);
 	isp_stats->confirmformat();
@@ -1635,7 +1695,50 @@ void captureframe()
 	encoder.output.stop_streaming();
 	encoder.capture.stop_streaming();
 	encoder.init(*isp_cap1);
-	encoder.setbitrate(200000);
+	encoder.setbitrate(1000000);
+
+	eventmanager em;
+	em.registercallback(vid0.fd(), POLLIN, [&vid, &isp_out](){
+		dmabuf vbuf;
+		vid->dequeuedma(&vbuf);
+		isp_out->queuedma(vbuf);
+	});
+
+	em.registercallback(vid_isp_out.fd(), POLLOUT, [&isp_out,&vid](){
+		dmabuf vbuf;
+		isp_out->dequeuedma(&vbuf);
+		vid->queuedma(vbuf);
+	});
+
+	em.registercallback(vid_isp_capture1.fd(), POLLIN, [&isp_cap1,&encoder](){
+		dmabuf vbuf;
+		isp_cap1->dequeuedma(&vbuf);
+		encoder.output.queuedma_plane(vbuf);
+	});
+
+	em.registercallback(vid_isp_capture2.fd(), POLLIN, [&isp_cap2](){
+		dmabuf vbuf;
+		isp_cap2->dequeuedma(&vbuf);
+		isp_cap2->queuedma(vbuf);
+		
+	});
+	em.registercallback(vid_isp_stat.fd(), POLLIN, [&isp_stats](){
+		dmabuf vbuf;
+		isp_stats->dequeuedma(&vbuf);
+		isp_stats->queuedma(vbuf);
+	});
+	em.registercallback(encoder.fd(), POLLIN, [&encoder, &isp_cap1](){
+		dmabuf vbuf;
+		encoder.output.trydequeuedma_plane(&vbuf);
+		isp_cap1->queuedma(vbuf);
+		
+		int bufindex;
+		encoder.capture.trydequeue_mmap_plane(&bufindex,[](auto data){
+			if (udpsender){
+				udpsender->Write(data.data(), data.size_bytes());
+			}
+		});
+	});
 
 	encoder.output.RequestBuffers(12, V4L2_MEMORY_DMABUF);		
 	encoder.capture.RequestBuffers(12, V4L2_MEMORY_MMAP);
@@ -1665,6 +1768,8 @@ void captureframe()
 	encoder.capture.start_streaming();
 	encoder.output.start_streaming();
 	
+	std::cout << "go.. "<<std::endl;
+	long prev = 0;
 	for(;;) {
 		
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -1690,11 +1795,7 @@ void captureframe()
 			}
 			int bufindex;
 			encoder.capture.trydequeue_mmap_plane(&bufindex,[](auto data){
-				if (udpsender){
-					udpsender->Write(data.data(), data.size_bytes());
-				}
-				
-				//std::cout<<data.size_bytes()<<std::endl;
+				udpsender->Write(data.data(), data.size_bytes());
 			});
 		}
 		
@@ -1705,8 +1806,8 @@ void captureframe()
 		if (isp_stats->trydequeuedma(POLLIN, &vbuf)) {
 			auto ptr = (uint8_t*)mappeddata[vbuf.fd];
 			if (ptr){
-				auto stats = (bcm2835_isp_stats*)ptr;
-				printhistogram(std::span(stats->hist->b_hist, NUM_HISTOGRAM_BINS));
+				//auto stats = (bcm2835_isp_stats*)ptr;
+				//printhistogram(std::span(stats->hist->b_hist, NUM_HISTOGRAM_BINS));
 			}
 			isp_stats->queuedma(vbuf);
 		}
@@ -1728,6 +1829,7 @@ void captureframe()
 #include <regex.h>
 int main(int argc, const char *argv[])
 {
+	
 	int portnr = 8805;
 	std::string host = "192.168.1.181";
 	if  (argc>1){
