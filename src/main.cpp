@@ -1591,47 +1591,6 @@ static void printhistogram(std::span<uint32_t> hist, int linecount = 30)
 	}
 }
 
-static char fchars[256] = {
-	/* 0 */ ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',
-	/* 1 */ ' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',
-	/* 2 */ '.','.','.','.','.','.','.','.','.','.','.','.','.','.','.','.',
-	/* 3 */ '.','.','.','.','.','.','.','.','.','.','.','.','.','.','.','.',
-	/* 4 */ '^','^','^','^','^','^','^','^','^','^','^','^','^','^','^','^',
-	/* 5 */ '^','^','^','^','^','^','^','^','^','^','^','^','^','^','^','^',
-	/* 6 */ 'o','o','o','o','o','o','o','o','o','o','o','o','o','o','o','o',
-	/* 7 */ 'o','o','o','o','o','o','o','o','o','o','o','o','o','o','o','o',
-	/* 8 */ 'O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O',
-	/* 9 */ 'O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O',
-	/* A */ 'Q','Q','Q','Q','Q','Q','Q','Q','Q','Q','Q','Q','Q','Q','Q','Q',
-	/* B */ 'Q','Q','Q','Q','Q','Q','Q','Q','Q','Q','Q','Q','Q','Q','Q','Q',
-	/* C */ 'W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W',
-	/* D */ 'W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W',
-	/* E */ '@','@','@','@','@','@','@','@','@','@','@','@','@','@','@','@',
-	/* F */ '@','@','@','@','@','@','@','@','@','@','@','@','@','@','@','@'
-};
-
-static void printframe(uint8_t* frame, int width, int height, int stride)
-{
-	int vstep = 6;
-	int hstep = 10;
-	char line[256];
-	auto lineptr = frame;
-	int linecount = 0;
-
-	for(int h = 0;h<height;h+=hstep){
-		auto lp = lineptr;
-		int k = 0;
-		for(int v = 0;v<width;v+=vstep){
-			line[k++]=fchars[lp[v*3]];
-		}
-		line[k]=0;
-		std::cout << line<<std::endl;
-		linecount++;
-		lineptr+=stride*hstep;
-	}
-	std::cout << "\e[" << linecount << "A";
-}
-
 class eventmanager
 {
 		struct callbackinfo
@@ -1693,11 +1652,11 @@ void captureframe()
 	isp_cap2->Reset();
 	isp_stats->Reset();
 
-	int width = 320;
-	int height = 240;
+	// int width = 320;
+	// int height = 240;
 	
-	// int width = 640;
-	// int height = 480;
+	 int width = 640;
+	 int height = 480;
 
 	//auto format = V4L2_PIX_FMT_SBGGR8;// 10 bit Bayer packed
 	auto format = V4L2_PIX_FMT_SGBRG10P;
