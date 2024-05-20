@@ -14,6 +14,8 @@
 #include <sys/types.h>
 #include <sys/poll.h>
 #include <unistd.h>
+#include <thread>
+#include <chrono>
 
 #include <functional>
 
@@ -48,6 +50,7 @@ class UDPSender
 				freeaddrinfo(addrs);
 
 				socketfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+				std::cout << "socketfd: "<<socketfd<<std::endl;
 			}
 		}
 
@@ -55,7 +58,7 @@ class UDPSender
 		{
 			//std::cout << "dgram size: "<<len<<std::endl;
 
-			int maxpacket = 1500;//16*1024;
+			int maxpacket = 1000;//16*1024;
 
 			int bytesleft = len;
 			uint8_t* buf = (uint8_t*)mem;
@@ -1387,6 +1390,23 @@ class h264encoder
 			ioctl(VIDIOC_S_CTRL, &ctrl);
 		}
 
+		void setRepeatSequenceHeader(bool value)
+		{
+			v4l2_control ctrl = {};
+			ctrl.id = V4L2_CID_MPEG_VIDEO_REPEAT_SEQ_HEADER;
+			ctrl.value=value;
+			ioctl(VIDIOC_S_CTRL, &ctrl);
+
+		}
+
+		void setIFramePeriod(int period)
+		{
+			v4l2_control ctrl = {};
+			ctrl.id = V4L2_CID_MPEG_VIDEO_H264_I_PERIOD;
+			ctrl.value=100;
+			ioctl(VIDIOC_S_CTRL, &ctrl);
+		}
+
 		void init(const vdev::stream& stream)
 		{
 			init(stream.width,stream.height,stream.bytesperline);
@@ -1434,8 +1454,7 @@ std::cout << "encoder init: "<<width<<"x"<<height<<std::endl;
 			if (cioctl(VIDIOC_S_PARM, &parm) < 0)
 				throw std::runtime_error("failed to set streamparm");
 
-		}	
-
+		}
 
 		// int request_buffers(int count, int streamtype, int buftype){	
 		// 	struct v4l2_requestbuffers req = {0};
@@ -1674,18 +1693,18 @@ void captureframe()
 	isp_cap2->Reset();
 	isp_stats->Reset();
 
-	int width = 640;
-	int height = 480;
+	int width = 320;
+	int height = 240;
 	
+	// int width = 640;
+	// int height = 480;
 
-//auto format = V4L2_PIX_FMT_SBGGR8;// 10 bit Bayer packed
-auto format = V4L2_PIX_FMT_SGBRG10P;
+	//auto format = V4L2_PIX_FMT_SBGGR8;// 10 bit Bayer packed
+	auto format = V4L2_PIX_FMT_SGBRG10P;
+	//auto format = V4L2_PIX_FMT_YUYV;
 
 	vid->setformat(width, height, format); 
 	isp_out->setformat(width, height, format);
-
-	//vid->setformat(width, height, V4L2_PIX_FMT_YUYV);
-	//isp_out->setformat(width, height, V4L2_PIX_FMT_YUYV);
 
 	isp_cap1->setformat(width, height, V4L2_PIX_FMT_YUV420);
 	isp_cap2->setformat(width/2, height/2, V4L2_PIX_FMT_YUV420);
@@ -1695,7 +1714,8 @@ auto format = V4L2_PIX_FMT_SGBRG10P;
 	encoder.output.stop_streaming();
 	encoder.capture.stop_streaming();
 	encoder.init(*isp_cap1);
-	encoder.setbitrate(1000000);
+	encoder.setbitrate(200000);
+	encoder.setRepeatSequenceHeader(true);
 
 	eventmanager em;
 	em.registercallback(vid0.fd(), POLLIN, [&vid, &isp_out](){
@@ -1770,47 +1790,9 @@ auto format = V4L2_PIX_FMT_SGBRG10P;
 	
 	std::cout << "go.. "<<std::endl;
 	long prev = 0;
+	
 	for(;;) {
-		
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
-		dmabuf vbuf;
-		
-		if (vid->trydequeuedma(POLLIN, &vbuf))
-		{
-			isp_out->queuedma(vbuf);
-		}
-
-		if (isp_out->trydequeuedma(POLLOUT, &vbuf)) {
-			vid->queuedma(vbuf);
-		}
-
-		if (isp_cap1->trydequeuedma(POLLIN, &vbuf))
-		{
-			encoder.output.queuedma_plane(vbuf);
-		}
-		
-		if (encoder.Poll(POLLIN)){
-			if (encoder.output.trydequeuedma_plane(&vbuf)){
-				isp_cap1->queuedma(vbuf);
-			}
-			int bufindex;
-			encoder.capture.trydequeue_mmap_plane(&bufindex,[](auto data){
-				udpsender->Write(data.data(), data.size_bytes());
-			});
-		}
-		
-		if (isp_cap2->trydequeuedma(POLLIN, &vbuf)){
-			isp_cap2->queuedma(vbuf);
-		}
-		
-		if (isp_stats->trydequeuedma(POLLIN, &vbuf)) {
-			auto ptr = (uint8_t*)mappeddata[vbuf.fd];
-			if (ptr){
-				//auto stats = (bcm2835_isp_stats*)ptr;
-				//printhistogram(std::span(stats->hist->b_hist, NUM_HISTOGRAM_BINS));
-			}
-			isp_stats->queuedma(vbuf);
-		}
+		em.Run();
 	}
 
 	std::cout << "isp_capture stream off"<<std::endl;
@@ -1830,7 +1812,7 @@ auto format = V4L2_PIX_FMT_SGBRG10P;
 int main(int argc, const char *argv[])
 {
 	
-	int portnr = 8805;
+	int portnr = 8905;
 	std::string host = "192.168.1.181";
 	if  (argc>1){
 			std::string str = argv[1];
